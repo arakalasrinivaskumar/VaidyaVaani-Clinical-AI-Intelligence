@@ -4,6 +4,9 @@
     "type": "module",
     "scripts": {
         "dev": "tsx server/index.ts",
+        "dev:node": "tsx server/index.ts",
+        "dev:python": "python python_backend/main.py",
+        "dev:all": "concurrently \"npm run dev:node\" \"npm run dev:python\"",
         "build": "tsx script/build.ts",
         "start": "NODE_ENV=production node dist/index.cjs"
     },

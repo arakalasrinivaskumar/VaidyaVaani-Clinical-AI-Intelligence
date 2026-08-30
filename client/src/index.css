@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -9,8 +9,9 @@
     --font-sans: 'Inter', sans-serif;
     --font-display: 'Plus Jakarta Sans', sans-serif;
 
-    /* Clean Medical Palette - Teal/Slate */
-    --background: 210 40% 98%; /* slate-50 */
+    /* Premium Medical Palette */
+    /* Deep Hospital Blue / Sterile White Backing */
+    --background: 210 40% 98%; 
     --foreground: 222 47% 11%;
     
     --card: 0 0% 100%;
@@ -19,27 +20,28 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
     
-    /* Medical Teal */
-    --primary: 184 80% 37%; 
-    --primary-foreground: 210 40% 98%;
+    /* Healing Teal - Primary */
+    --primary: 173 80% 40%; 
+    --primary-foreground: 0 0% 100%;
     
-    /* Soft Blue Secondary */
-    --secondary: 214 32% 91%;
+    /* Trust Blue - Secondary */
+    --secondary: 214 80% 94%;
     --secondary-foreground: 222 47% 11%;
     
     --muted: 210 40% 96%;
     --muted-foreground: 215 16% 47%;
     
-    /* Amber Accent for Safety Notes */
+    /* Warning / Safety Orange */
     --accent: 38 92% 50%;
-    --accent-foreground: 210 40% 98%;
+    --accent-foreground: 0 0% 100%;
     
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
+    /* Emergency / Destructive Red */
+    --destructive: 350 84% 60%;
+    --destructive-foreground: 0 0% 100%;
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 184 80% 37%;
+    --ring: 173 80% 40%;
     
     --radius: 1rem;
   }
@@ -47,11 +49,11 @@
   .dark {
     --background: 222 47% 11%;
     --foreground: 210 40% 98%;
-    --card: 222 47% 11%;
+    --card: 224 45% 15%;
     --card-foreground: 210 40% 98%;
-    --popover: 222 47% 11%;
+    --popover: 224 45% 15%;
     --popover-foreground: 210 40% 98%;
-    --primary: 184 80% 37%;
+    --primary: 173 80% 40%;
     --primary-foreground: 210 40% 98%;
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;
@@ -59,11 +61,11 @@
     --muted-foreground: 215 20.2% 65.1%;
     --accent: 38 92% 50%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --destructive: 350 62.8% 50.6%;
     --destructive-foreground: 210 40% 98%;
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 184 80% 37%;
+    --ring: 173 80% 40%;
   }
 }
 
@@ -74,6 +76,10 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
+    /* Subtle medical cross pattern background */
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 40px 40px;
+    background-attachment: fixed;
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
@@ -81,11 +87,49 @@
   }
 }
 
-/* Beautiful custom utilities */
-.glass-card {
-  @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl shadow-slate-200/50;
+/* Custom Medical Animations & Utilities */
+.glass-medical-card {
+  @apply bg-white/95 backdrop-blur-xl border border-white/50 shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(20,184,166,0.1)] transition-all duration-500;
 }
 
-.text-gradient {
-  @apply bg-clip-text text-transparent bg-gradient-to-r from-teal-600 to-blue-600;
+.text-gradient-medical {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-[#0F766E] to-[#0369A1];
+}
+
+@keyframes heartbeat {
+  0% { transform: scale(1); }
+  14% { transform: scale(1.1); }
+  28% { transform: scale(1); }
+  42% { transform: scale(1.1); }
+  70% { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+
+.animate-heartbeat {
+  animation: heartbeat 2s infinite;
+}
+
+@keyframes ekg {
+  0% { transform: translateX(-100%) }
+  100% { transform: translateX(200%) }
+}
+
+.ekg-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 50%;
+  background: linear-gradient(90deg, transparent, #14B8A6, #14B8A6, transparent);
+  animation: ekg 2.5s linear infinite;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 15px rgba(20, 184, 166, 0); }
+  100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(20, 184, 166, 0); }
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s infinite cubic-bezier(0.66, 0, 0, 1);
 }

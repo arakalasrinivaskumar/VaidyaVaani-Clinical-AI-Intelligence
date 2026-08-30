@@ -2,3 +2,9 @@ node_modules/
 dist/
 .env
 .env.local
+*.mp4
+*.zip
+*.pptx
+*.docx
+*.pdf
+__pycache__/

@@ -7,6 +7,7 @@ import express from "express";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as googleTTS from "google-tts-api";
 import { Buffer } from "node:buffer";
+import OpenAI from "openai";
 
 const MASTER_PROMPT = `
 You are a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
@@ -55,26 +56,31 @@ export async function registerRoutes(
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Initialize Gemini API
+  // Initialize AI Clients
+  const xaiApiKey = process.env.XAI_API_KEY;
+  const grok = xaiApiKey && xaiApiKey !== "your_grok_api_key_here" 
+    ? new OpenAI({
+        apiKey: xaiApiKey,
+        baseURL: "https://api.x.ai/v1",
+      }) 
+    : null;
+
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
   app.post(api.prescriptions.parse.path, async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY environment variable is not set");
-      }
-
       const input = api.prescriptions.parse.input.parse(req.body);
-
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-      // The image might come as a data URI like "data:image/jpeg;base64,/9j/4AAQSk..."
-      // and we need to strip that part to just pass the base64 content
       const base64Data = input.image.split(',')[1] || input.image;
       const mimeType = input.image.split(';')[0].split(':')[1] || "image/jpeg";
-
       const prompt = `Target language: ${input.language}. Parse the attached prescription.`;
 
+      let responseText: string;
+
+      console.log("Using Gemini for parsing...");
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error("GEMINI_API_KEY environment variable is set");
+      }
+      const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
       const result = await model.generateContent([
         { text: MASTER_PROMPT },
         { text: prompt },
@@ -85,8 +91,7 @@ export async function registerRoutes(
           }
         }
       ]);
-
-      const responseText = result.response.text();
+      responseText = result.response.text();
 
       // Clean up string just in case there are markdown tags around the json
       const cleanedJsonText = responseText.replace(/^```(json)?\n?/i, '').replace(/\n?```\n?$/i, '').trim();
