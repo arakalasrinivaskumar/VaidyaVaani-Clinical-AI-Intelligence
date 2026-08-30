@@ -12,11 +12,11 @@ export function useParsePrescription() {
       
       if (!res.ok) {
         let errorMessage = "Failed to parse prescription";
+        const text = await res.text();
         try {
-          const error = await res.json();
+          const error = JSON.parse(text);
           errorMessage = error.message || errorMessage;
         } catch {
-          const text = await res.text();
           if (res.status === 413) {
             errorMessage = "Image payload too large. Please upload a smaller image file.";
           } else {
