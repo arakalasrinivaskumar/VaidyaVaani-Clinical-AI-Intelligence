@@ -65,7 +65,7 @@ export async function registerRoutes(
       }) 
     : null;
 
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AQ.Ab8RN6ID6a3tPacTo0GxaLpAUMnRMaj9I3kAe0Gx0O6tiatfxA");
 
   app.post(api.prescriptions.parse.path, async (req, res) => {
     try {
