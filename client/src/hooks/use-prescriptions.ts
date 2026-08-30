@@ -11,8 +11,19 @@ export function useParsePrescription() {
       });
       
       if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || "Failed to parse prescription");
+        let errorMessage = "Failed to parse prescription";
+        try {
+          const error = await res.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          const text = await res.text();
+          if (res.status === 413) {
+            errorMessage = "Image payload too large. Please upload a smaller image file.";
+          } else {
+            errorMessage = `Server error (${res.status}): ${text.slice(0, 100)}`;
+          }
+        }
+        throw new Error(errorMessage);
       }
       
       return res.json() as Promise<ParsePrescriptionResponseType>;

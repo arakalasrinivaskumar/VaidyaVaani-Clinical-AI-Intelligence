@@ -78,9 +78,9 @@ export async function registerRoutes(
 
       console.log("Using Gemini for parsing...");
       if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY environment variable is set");
+        throw new Error("GEMINI_API_KEY environment variable is missing");
       }
-      const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const result = await model.generateContent([
         { text: MASTER_PROMPT },
         { text: prompt },

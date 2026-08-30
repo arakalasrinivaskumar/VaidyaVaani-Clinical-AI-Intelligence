@@ -20,8 +20,29 @@ export function ParserTab() {
     const file = acceptedFiles[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = () => {
-        setImage(reader.result as string);
+      reader.onload = (e) => {
+        const img = new Image();
+        img.src = e.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          let width = img.width;
+          let height = img.height;
+          const maxDim = 1600;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx?.drawImage(img, 0, 0, width, height);
+          setImage(canvas.toDataURL("image/jpeg", 0.85));
+        };
       };
       reader.readAsDataURL(file);
     }

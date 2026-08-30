@@ -1,0 +1,26 @@
+# Exclude build artifacts and development files
+node_modules/
+dist/
+.env
+.env.local
+
+# Exclude specific file types
+*.mp4
+*.zip
+*.pptx
+*.docx
+*.pdf
+
+# Exclude Python cache and specific Replit files
+__pycache__/
+.python/
+
+# Exclude any backup files
+*.backup
+
+# Exclude local state directories (especially from Replit)
+.local/
+
+# Exclude test images and other temporary files
+test*.jpeg
+ciplar-40-tablet.webp
