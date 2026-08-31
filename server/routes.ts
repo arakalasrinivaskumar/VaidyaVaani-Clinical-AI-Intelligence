@@ -4,7 +4,6 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import express from "express";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as googleTTS from "google-tts-api";
 import { Buffer } from "node:buffer";
 import OpenAI from "openai";
@@ -22,7 +21,7 @@ You must not diagnose or change medical intent.
 You must not invent medicines or dosages.
 
 OUTPUT FORMAT (STRICT JSON):
-Return output in the following JSON structure ONLY. Do not include markdown formatting or backticks. 
+Return output in the following JSON structure ONLY. Do not include markdown formatting or backticks.
 CRITICAL: ALL STRING VALUES MUST BE IN THE TARGET LANGUAGE (Except medicine names which should be in English or transliterated).
 
 {
@@ -45,7 +44,7 @@ PROCESSING RULES
 1. OCR Normalization: Correct errors, identify medicines/dosage.
 2. Abbreviations: OD (Once), BD (Twice), TID (Three times), HS (Night), SOS (As needed), AC (Before food), PC (After food).
 3. Dosage: Maintain exact dosage. Convert frequency into human-understandable format in the TARGET LANGUAGE.
-4. Translation rules: You MUST translate the explanation, instructions, duration, dosage, safety notes, and TTS text completely into the TARGET LANGUAGE provided by the user. 
+4. Translation rules: You MUST translate the explanation, instructions, duration, dosage, safety notes, and TTS text completely into the TARGET LANGUAGE provided by the user.
 5. Patient Safety: Add warning if unclear, never advise stopping medicine.
 `;
 
@@ -58,11 +57,11 @@ export async function registerRoutes(
 
   // Initialize AI Clients
   const xaiApiKey = process.env.XAI_API_KEY;
-  const grok = xaiApiKey && xaiApiKey !== "your_grok_api_key_here" 
+  const grok = xaiApiKey && xaiApiKey !== "your_grok_api_key_here"
     ? new OpenAI({
         apiKey: xaiApiKey,
         baseURL: "https://api.x.ai/v1",
-      }) 
+      })
     : null;
 
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AQ.Ab8RN6ID6a3tPacTo0GxaLpAUMnRMaj9I3kAe0Gx0O6tiatfxA");
@@ -76,22 +75,19 @@ export async function registerRoutes(
 
       let responseText: string;
 
-      console.log("Using Gemini for parsing...");
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY environment variable is missing");
+      if (!xaiApiKey) {
+        throw new Error("XAI_API_KEY environment variable is missing for OpenAI fallback");
       }
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent([
-        { text: MASTER_PROMPT },
-        { text: prompt },
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType: mimeType
-          }
-        }
-      ]);
-      responseText = result.response.text();
+      console.log("Using OpenAI for parsing...");
+      const chatCompletion = await grok!.chat.completions.create({
+        model: "gpt-4", // Using gpt-4 as a strong general-purpose model
+        messages: [
+          { role: "system", content: MASTER_PROMPT },
+          { role: "user", content: prompt + `\nBase64 image data: ${base64Data}` },
+        ],
+        max_tokens: 2000,
+      });
+      responseText = chatCompletion.choices[0].message.content!;
 
       // Clean up string just in case there are markdown tags around the json
       const cleanedJsonText = responseText.replace(/^```(json)?\n?/i, '').replace(/\n?```\n?$/i, '').trim();
@@ -126,6 +122,26 @@ export async function registerRoutes(
         });
       } else {
         const errorMsg = err instanceof Error ? err.message : "Failed to parse prescription";
+        // Try OpenAI fallback if Gemini fails
+        if (xaiApiKey) {
+          try {
+            const chatCompletion = await grok!.chat.completions.create({
+              model: "gpt-4",
+              messages: [
+                { role: "system", content: MASTER_PROMPT },
+                { role: "user", content: prompt },
+              ],
+              max_tokens: 2000,
+            });
+            const fallbackText = chatCompletion.choices[0].message.content!;
+            const fallbackObj = JSON.parse(fallbackText);
+            const fallbackResponse = api.prescriptions.parse.responses[200].parse(fallbackObj);
+            res.status(200).json(fallbackResponse);
+            return;
+          } catch (openaiErr) {
+            console.error("OpenAI fallback failed:", openaiErr);
+          }
+        }
         res.status(500).json({ message: errorMsg });
       }
     }
@@ -144,9 +160,9 @@ export async function registerRoutes(
 
       // Try to determine language from text loosely - or default to english/hindi mix
       let lang = "hi"; // default
-      if (/[\u0c00-\u0c7f]/.test(input.text)) {
+      if (/[ఀ-౿]/.test(input.text)) {
         lang = "te"; // Has Telugu characters
-      } else if (!/[\u0900-\u097F]/.test(input.text) && /^[a-zA-Z\s.,]*$/.test(input.text)) {
+      } else if (!/[ऀ-ॿ]/.test(input.text) && /^[a-zA-Z\s.,]*$/.test(input.text)) {
         lang = "en"; // English only
       }
 
