@@ -9,7 +9,7 @@ import { Buffer } from "node:buffer";
 import OpenAI from "openai";
 
 const MASTER_PROMPT = `
-You are a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
+Youare a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
 Your task is to:
 * Interpret OCR-extracted prescription text
 * Understand medical dosage instructions
@@ -56,15 +56,7 @@ export async function registerRoutes(
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Initialize AI Clients
-  const xaiApiKey = process.env.XAI_API_KEY;
-  const grok = xaiApiKey && xaiApiKey !== "your_grok_api_key_here"
-    ? new OpenAI({
-        apiKey: xaiApiKey,
-        baseURL: "https://api.x.ai/v1",
-      })
-    : null;
-
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "AQ.Ab8RN6ID6a3tPacTo0GxaLpAUMnRMaj9I3kAe0Gx0O6tiatfxA");
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
   app.post(api.prescriptions.parse.path, async (req, res) => {
     try {
@@ -75,19 +67,22 @@ export async function registerRoutes(
 
       let responseText: string;
 
-      if (!xaiApiKey) {
-        throw new Error("XAI_API_KEY environment variable is missing for OpenAI fallback");
+      if (!process.env.OPENAI_API_KEY) {
+        throw new Error("OPENAI_API_KEY environment variable is missing for OpenAI parsing");
       }
-      console.log("Using OpenAI for parsing...");
-      const chatCompletion = await grok!.chat.completions.create({
-        model: "gpt-4", // Using gpt-4 as a strong general-purpose model
+      console.log("Using OpenAI (gpt-4o) for parsing...");
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
         messages: [
           { role: "system", content: MASTER_PROMPT },
-          { role: "user", content: prompt + `\nBase64 image data: ${base64Data}` },
+          { role: "user", content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+          ]}
         ],
-        max_tokens: 2000,
+        response_format: { type: "json_object" }
       });
-      responseText = chatCompletion.choices[0].message.content!;
+      responseText = response.choices[0].message.content || "";
 
       // Clean up string just in case there are markdown tags around the json
       const cleanedJsonText = responseText.replace(/^```(json)?\n?/i, '').replace(/\n?```\n?$/i, '').trim();
@@ -122,18 +117,18 @@ export async function registerRoutes(
         });
       } else {
         const errorMsg = err instanceof Error ? err.message : "Failed to parse prescription";
-        // Try OpenAI fallback if Gemini fails
-        if (xaiApiKey) {
+        // Try OpenAI fallback if parsing fails
+        if (process.env.OPENAI_API_KEY) {
           try {
-            const chatCompletion = await grok!.chat.completions.create({
-              model: "gpt-4",
+            const fallbackCompletion = await openai.chat.completions.create({
+              model: "gpt-4o",
               messages: [
                 { role: "system", content: MASTER_PROMPT },
                 { role: "user", content: prompt },
               ],
-              max_tokens: 2000,
+              response_format: { type: "json_object" }
             });
-            const fallbackText = chatCompletion.choices[0].message.content!;
+            const fallbackText = fallbackCompletion.choices[0].message.content || "";
             const fallbackObj = JSON.parse(fallbackText);
             const fallbackResponse = api.prescriptions.parse.responses[200].parse(fallbackObj);
             res.status(200).json(fallbackResponse);
