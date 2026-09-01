@@ -9,7 +9,7 @@ import { Buffer } from "node:buffer";
 import OpenAI from "openai";
 
 const MASTER_PROMPT = `
-Youare a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
+You are a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
 Your task is to:
 * Interpret OCR-extracted prescription text
 * Understand medical dosage instructions
@@ -48,10 +48,7 @@ PROCESSING RULES
 5. Patient Safety: Add warning if unclear, never advise stopping medicine.
 `;
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express
-): Promise<Server> {
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -65,8 +62,6 @@ export async function registerRoutes(
       const mimeType = input.image.split(';')[0].split(':')[1] || "image/jpeg";
       const prompt = `Target language: ${input.language}. Parse the attached prescription.`;
 
-      let responseText: string;
-
       if (!process.env.OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY environment variable is missing for OpenAI parsing");
       }
@@ -75,22 +70,16 @@ export async function registerRoutes(
         model: "gpt-4o",
         messages: [
           { role: "system", content: MASTER_PROMPT },
-          { role: "user", content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64Data}` } }
-          ]}
+          { role: "user", content: prompt + "\nBase64 image data: " + base64Data }
         ],
         response_format: { type: "json_object" }
       });
-      responseText = response.choices[0].message.content || "";
 
-      // Clean up string just in case there are markdown tags around the json
-      const cleanedJsonText = responseText.replace(/^```(json)?\n?/i, '').replace(/\n?```\n?$/i, '').trim();
-
+      const responseText = response.choices[0].message.content || "";
+      const cleanedJsonText = responseText.replace(/^`?(json)?\n?/i, '').replace(/\n?`?\n?$/i, '').trim();
       const resultObj = JSON.parse(cleanedJsonText);
       const parsedResponse = api.prescriptions.parse.responses[200].parse(resultObj);
 
-      // Store in DB for history
       try {
         await storage.createPrescription({
           language: input.language,
@@ -99,11 +88,10 @@ export async function registerRoutes(
           vernacularTranslation: parsedResponse.vernacular_translation,
           safetyNotes: parsedResponse.safety_notes,
           ttsReadyText: parsedResponse.tts_ready_text,
-          imageUrl: null, // Optionally process and upload image to long term storage here
+          imageUrl: null,
           ocrText: null
         });
       } catch (dbErr) {
-        // If the DB fails (e.g. not connected), we still want to return the parsed info
         console.warn("Could not save to database, but returning parsed data anyway:", dbErr);
       }
 
@@ -113,18 +101,17 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         res.status(400).json({
           message: err.errors[0].message,
-          field: err.errors[0].path.join('.'),
+          field: err.errors[0].path.join('.')
         });
       } else {
         const errorMsg = err instanceof Error ? err.message : "Failed to parse prescription";
-        // Try OpenAI fallback if parsing fails
         if (process.env.OPENAI_API_KEY) {
           try {
             const fallbackCompletion = await openai.chat.completions.create({
               model: "gpt-4o",
               messages: [
                 { role: "system", content: MASTER_PROMPT },
-                { role: "user", content: prompt },
+                { role: "user", content: prompt }
               ],
               response_format: { type: "json_object" }
             });
@@ -145,35 +132,13 @@ export async function registerRoutes(
   app.post(api.prescriptions.tts.path, async (req, res) => {
     try {
       const input = api.prescriptions.tts.input.parse(req.body);
+      const languageMap: Record<string, string> = { "hindi": "hi", "telugu": "te" };
+      let lang = "hi";
+      if (/[ఀ-౿]/.test(input.text)) lang = "te";
+      else if (!/[ऀ-ॿ]/.test(input.text) && /^[a-zA-Z\s.,]*$/.test(input.text)) lang = "en";
 
-      // Use the open source google-tts-api instead of OpenAI TTS
-      // It downloads base64 chunks and we buffer them.
-      const languageMap: Record<string, string> = {
-        "hindi": "hi",
-        "telugu": "te"
-      };
-
-      // Try to determine language from text loosely - or default to english/hindi mix
-      let lang = "hi"; // default
-      if (/[ఀ-౿]/.test(input.text)) {
-        lang = "te"; // Has Telugu characters
-      } else if (!/[ऀ-ॿ]/.test(input.text) && /^[a-zA-Z\s.,]*$/.test(input.text)) {
-        lang = "en"; // English only
-      }
-
-      // Convert the text cleanly into a single Audio Buffer
-      // We process large texts using getAllAudioBase64
-      const audioChunks = await googleTTS.getAllAudioBase64(input.text, {
-        lang: lang,
-        slow: false,
-        host: 'https://translate.google.com',
-      });
-
-      // Combine base64 parts
-      const fullBuffer = Buffer.concat(
-        audioChunks.map(chunk => Buffer.from(chunk.base64, 'base64'))
-      );
-
+      const audioChunks = await googleTTS.getAllAudioBase64(input.text, { lang, slow: false, host: 'https://translate.google.com' });
+      const fullBuffer = Buffer.concat(audioChunks.map(chunk => Buffer.from(chunk.base64, 'base64')));
       res.setHeader('Content-Type', 'audio/mp3');
       res.status(200).send(fullBuffer);
     } catch (err) {
