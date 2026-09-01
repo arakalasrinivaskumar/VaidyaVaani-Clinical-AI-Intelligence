@@ -56,7 +56,7 @@ export async function registerRoutes(
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Initialize AI Clients
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: "https://api.x.ai/v1" });
 
   app.post(api.prescriptions.parse.path, async (req, res) => {
     try {
