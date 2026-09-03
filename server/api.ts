@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { z } from "zod";
 import * as googleTTS from "google-tts-api";
 
@@ -79,61 +80,130 @@ app.get(["/api/health", "/health", "/"], (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "VaidyaVaani API", timestamp: new Date().toISOString() });
 });
 
-// ─── Parse Prescription ─────────────────────────────────────────────
+// Helper for Vision AI API call (tries OpenAI/xAI, falls back to Gemini)
+async function parseWithOpenAI(apiKey: string, imageBase64: string, mimeType: string, language: string) {
+  const isXAI = apiKey.startsWith("xai-");
+  const baseURL = isXAI ? "https://api.x.ai/v1" : (process.env.OPENAI_BASE_URL || undefined);
+  const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
+
+  console.log(`[VaidyaVaani] Calling ${isXAI ? "xAI" : "OpenAI"} model=${model}`);
+
+  const OpenAIClient = (OpenAI as any).default || OpenAI;
+  const openai = new OpenAIClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
+
+  const imageUrl = imageBase64.startsWith("data:")
+    ? imageBase64
+    : `data:${mimeType};base64,${imageBase64}`;
+
+  const response = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: MASTER_PROMPT },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `Target language: ${language}. Parse the attached prescription.` },
+          { type: "image_url", image_url: { url: imageUrl } },
+        ],
+      },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0].message.content || "{}";
+  const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
+  return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
+}
+
+async function parseWithGemini(geminiKey: string, imageBase64: string, mimeType: string, language: string) {
+  console.log(`[VaidyaVaani] Calling Gemini (gemini-1.5-flash)`);
+  const genAI = new GoogleGenerativeAI(geminiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const cleanBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+  const result = await model.generateContent([
+    `${MASTER_PROMPT}\n\nTarget language: ${language}. Parse the attached prescription. Return output strictly in valid JSON matching the specified structure.`,
+    {
+      inlineData: {
+        data: cleanBase64,
+        mimeType: mimeType || "image/jpeg",
+      },
+    },
+  ]);
+
+  const raw = result.response.text();
+  const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
+  return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
+}
+
+// ─── Parse Prescription Route ─────────────────────────────────────────
 app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Request, res: Response) => {
   try {
     const input = ParsePrescriptionInput.parse(req.body);
 
-    const apiKey =
-      process.env.OPENAI_API_KEY ||
-      process.env.OPENAI_KEY_1 ||
-      process.env.XAI_API_KEY_1 ||
-      process.env.XAI_API_KEY;
-
-    if (!apiKey) {
-      res.status(400).json({
-        message: "No API key configured. Set OPENAI_API_KEY in Vercel Environment Variables.",
-        envChecked: ["OPENAI_API_KEY", "OPENAI_KEY_1", "XAI_API_KEY_1", "XAI_API_KEY"],
-      });
-      return;
-    }
-
-    const isXAI = apiKey.startsWith("xai-");
-    const baseURL = isXAI ? "https://api.x.ai/v1" : (process.env.OPENAI_BASE_URL || undefined);
-    const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
-
-    console.log(`[VaidyaVaani] model=${model} lang=${input.language}`);
-
-    const OpenAIClient = (OpenAI as any).default || OpenAI;
-    const openai = new OpenAIClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
+    const xaiKey = process.env.XAI_API_KEY_1 || process.env.XAI_API_KEY;
+    const openAIKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY_1;
+    const geminiKey = process.env.GEMINI_API_KEY;
 
     const mimeType = input.image.startsWith("data:")
       ? (input.image.split(";")[0].split(":")[1] || "image/jpeg")
       : "image/jpeg";
-    const imageUrl = input.image.startsWith("data:")
-      ? input.image
-      : `data:${mimeType};base64,${input.image}`;
 
-    const response = await openai.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: MASTER_PROMPT },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: `Target language: ${input.language}. Parse the attached prescription.` },
-            { type: "image_url", image_url: { url: imageUrl } },
-          ],
-        },
-      ],
-      response_format: { type: "json_object" },
+    let lastError: Error | null = null;
+
+    // Priority 1: Try xAI (Grok-2 Vision) if xAI key is available
+    if (xaiKey) {
+      try {
+        const parsed = await parseWithOpenAI(xaiKey, input.image, mimeType, input.language);
+        res.status(200).json(parsed);
+        return;
+      } catch (err: any) {
+        console.warn("[VaidyaVaani] xAI failed, trying fallback:", err.message);
+        lastError = err;
+      }
+    }
+
+    // Priority 2: Try OpenAI if key is available
+    if (openAIKey) {
+      try {
+        const parsed = await parseWithOpenAI(openAIKey, input.image, mimeType, input.language);
+        res.status(200).json(parsed);
+        return;
+      } catch (err: any) {
+        console.warn("[VaidyaVaani] OpenAI failed, trying fallback:", err.message);
+        lastError = err;
+      }
+    }
+
+    // Priority 3: Try Google Gemini if GEMINI_API_KEY is available
+    if (geminiKey) {
+      try {
+        const parsed = await parseWithGemini(geminiKey, input.image, mimeType, input.language);
+        res.status(200).json(parsed);
+        return;
+      } catch (err: any) {
+        console.warn("[VaidyaVaani] Gemini failed:", err.message);
+        lastError = err;
+      }
+    }
+
+    // If no provider succeeded or no keys configured:
+    if (lastError) {
+      const isQuotaError = lastError.message.includes("429") || lastError.message.includes("quota") || lastError.message.includes("credits");
+      if (isQuotaError) {
+        res.status(402).json({
+          message: "API Quota Exceeded: The configured OpenAI/xAI API key has run out of billing credits. Please add billing credits at https://platform.openai.com/settings/organization/billing or configure a valid GEMINI_API_KEY in Vercel."
+        });
+        return;
+      }
+      res.status(500).json({ message: lastError.message });
+      return;
+    }
+
+    res.status(400).json({
+      message: "No API keys configured in Vercel Environment Variables. Please set OPENAI_API_KEY, XAI_API_KEY, or GEMINI_API_KEY.",
+      envChecked: ["OPENAI_API_KEY", "OPENAI_KEY_1", "XAI_API_KEY_1", "XAI_API_KEY", "GEMINI_API_KEY"],
     });
-
-    const raw = response.choices[0].message.content || "{}";
-    const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
-    const parsed = ParsePrescriptionOutput.parse(JSON.parse(cleaned));
-
-    res.status(200).json(parsed);
   } catch (err) {
     console.error("[VaidyaVaani] Parse error:", err);
     if (err instanceof z.ZodError) {
