@@ -60,9 +60,18 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
     const mimeType = input.image.split(";")[0].split(":")[1] || "image/jpeg";
     const prompt = `Target language: ${input.language}. Parse the attached prescription.`;
 
-    const apiKey = process.env.OPENAI_API_KEY || process.env.XAI_API_KEY;
+    // Check all possible env var name variations (Vercel may have them under different names)
+    const apiKey =
+      process.env.OPENAI_API_KEY ||
+      process.env.OPENAI_KEY_1 ||
+      process.env.XAI_API_KEY_1 ||
+      process.env.XAI_API_KEY;
+
     if (!apiKey) {
-      res.status(400).json({ message: "OPENAI_API_KEY is not configured in Vercel environment variables." });
+      res.status(400).json({
+        message: "No API key found. Please ensure OPENAI_API_KEY or XAI_API_KEY is set in Vercel Environment Variables.",
+        checked: ["OPENAI_API_KEY", "OPENAI_KEY_1", "XAI_API_KEY_1", "XAI_API_KEY"],
+      });
       return;
     }
 
