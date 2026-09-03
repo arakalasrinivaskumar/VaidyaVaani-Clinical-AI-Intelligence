@@ -109,12 +109,12 @@ function getCandidateKeys(): KeyCandidate[] {
 
     const uName = name.toUpperCase();
 
-    // Check provider based on name pattern or key value prefix
-    if (uName.includes("GEMINI") || uName.includes("GOOGLE") || key.startsWith("AIza")) {
+    // Check provider based on key value prefix first, then name pattern
+    if (key.startsWith("AIza") || uName.includes("GEMINI") || uName.includes("GOOGLE")) {
       candidates.push({ provider: "gemini", key, name });
-    } else if (uName.includes("XAI") || uName.includes("GROK") || key.startsWith("xai-")) {
+    } else if (key.startsWith("xai-") || uName.includes("XAI") || uName.includes("GROK")) {
       candidates.push({ provider: "xai", key, name });
-    } else if (uName.includes("OPENAI") || uName.includes("GPT") || key.startsWith("sk-")) {
+    } else if (key.startsWith("sk-") || uName.includes("OPENAI") || uName.includes("GPT")) {
       candidates.push({ provider: "openai", key, name });
     }
   }
@@ -128,13 +128,15 @@ function getCandidateKeys(): KeyCandidate[] {
   });
 }
 
-// Helper: Call OpenAI or xAI
+// Helper: Call OpenAI or xAI with multi-model fallback
 async function parseWithOpenAI(candidate: KeyCandidate, imageBase64: string, mimeType: string, language: string) {
   const isXAI = candidate.provider === "xai" || candidate.key.startsWith("xai-");
   const baseURL = isXAI ? "https://api.x.ai/v1" : (process.env.OPENAI_BASE_URL || undefined);
-  const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
-
-  console.log(`[VaidyaVaani] Trying key [${candidate.name}] (${candidate.provider}) model=${model}`);
+  
+  // xAI's current active vision models & OpenAI models
+  const modelsToTry = isXAI
+    ? ["grok-2-vision-latest", "grok-2-vision", "grok-vision-beta", "grok-2-1212", "grok-2-latest", "grok-beta"]
+    : ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"];
 
   const OpenAIClient = (OpenAI as any).default || OpenAI;
   const openai = new OpenAIClient({ apiKey: candidate.key, ...(baseURL ? { baseURL } : {}) });
@@ -143,32 +145,56 @@ async function parseWithOpenAI(candidate: KeyCandidate, imageBase64: string, mim
     ? imageBase64
     : `data:${mimeType};base64,${imageBase64}`;
 
-  const response = await openai.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: MASTER_PROMPT },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: `Target language: ${language}. Parse the attached prescription image accurately.` },
-          { type: "image_url", image_url: { url: imageUrl } },
+  let lastErr: any = null;
+  for (const model of modelsToTry) {
+    try {
+      console.log(`[VaidyaVaani] Trying key [${candidate.name}] (${candidate.provider}) model=${model}`);
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: MASTER_PROMPT },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `Target language: ${language}. Parse the attached prescription image accurately.` },
+              { type: "image_url", image_url: { url: imageUrl } },
+            ],
+          },
         ],
-      },
-    ],
-    response_format: { type: "json_object" },
-  });
+        response_format: { type: "json_object" },
+      });
 
-  const raw = response.choices[0].message.content || "{}";
-  const parsed = extractAndParseJson(raw);
-  return ParsePrescriptionOutput.parse(parsed);
+      const raw = response.choices[0].message.content || "{}";
+      const parsed = extractAndParseJson(raw);
+      return ParsePrescriptionOutput.parse(parsed);
+    } catch (err: any) {
+      lastErr = err;
+      const msg = err?.message || String(err);
+      console.warn(`[VaidyaVaani] Model ${model} on key ${candidate.name} failed: ${msg}`);
+      // If out of credits or invalid key, stop looping through models on this dead key
+      if (msg.includes("credits") || msg.includes("quota") || msg.includes("Incorrect API key") || msg.includes("401")) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastErr || new Error("All models failed for provider");
 }
 
-// Helper: Call Google Gemini with automatic model fallback
+// Helper: Call Google Gemini with multi-model fallback
 async function parseWithGemini(candidate: KeyCandidate, imageBase64: string, mimeType: string, language: string) {
   console.log(`[VaidyaVaani] Trying key [${candidate.name}] (Google Gemini)`);
   const genAI = new GoogleGenerativeAI(candidate.key);
 
-  const modelsToTry = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"];
+  const modelsToTry = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-pro",
+  ];
   const cleanBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
   let lastGeminiErr: any = null;
 
@@ -196,7 +222,11 @@ async function parseWithGemini(candidate: KeyCandidate, imageBase64: string, mim
       return ParsePrescriptionOutput.parse(parsed);
     } catch (err: any) {
       lastGeminiErr = err;
-      console.warn(`[VaidyaVaani] Gemini model [${modelName}] failed: ${err?.message || err}`);
+      const msg = err?.message || String(err);
+      console.warn(`[VaidyaVaani] Gemini model [${modelName}] failed: ${msg}`);
+      if (msg.includes("API_KEY_INVALID") || msg.includes("401") || msg.includes("QUOTA_EXCEEDED")) {
+        throw err;
+      }
     }
   }
 
@@ -211,7 +241,7 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
 
     if (candidates.length === 0) {
       res.status(400).json({
-        message: "No API keys found in environment variables. Please add GEMINI_API_KEY (from https://aistudio.google.com/) or OPENAI_API_KEY to your Vercel Environment Variables and Redeploy.",
+        message: "No API keys found in environment variables. Please add GEMINI_API_KEY (from https://aistudio.google.com/) or OPENAI_API_KEY to your Vercel Environment Variables.",
       });
       return;
     }
@@ -245,7 +275,7 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
     // All candidate keys failed
     console.error("[VaidyaVaani] All API keys in rotation pool failed:", errors);
     res.status(402).json({
-      message: `All ${candidates.length} configured API keys in your pool failed or returned errors. If you just added new keys in Vercel, remember to click "Redeploy" on the Deployments tab so the new keys take effect!`,
+      message: `All ${candidates.length} configured API keys in your pool failed or returned errors.`,
       details: errors,
     });
   } catch (err) {
