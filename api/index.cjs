@@ -31,7 +31,6 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // node_modules/depd/index.js
 var require_depd = __commonJS({
@@ -30141,11 +30140,6 @@ var init_fileFromPath = __esm({
 });
 
 // server/api.ts
-var api_exports = {};
-__export(api_exports, {
-  default: () => api_default
-});
-module.exports = __toCommonJS(api_exports);
 var import_express = __toESM(require_express2(), 1);
 
 // node_modules/openai/internal/qs/formats.mjs
@@ -40936,7 +40930,7 @@ app.use((err, _req, res, _next) => {
   console.error("[VaidyaVaani] Unhandled:", err);
   res.status(err.status || 500).json({ message: err.message || "Internal Server Error" });
 });
-var api_default = app;
+module.exports = app;
 /*! Bundled license information:
 
 depd/index.js:
