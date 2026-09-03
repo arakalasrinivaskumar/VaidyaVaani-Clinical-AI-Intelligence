@@ -14,10 +14,10 @@ from datetime import datetime
 
 import google.generativeai as genai
 from openai import OpenAI
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from gtts import gTTS
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -34,8 +34,19 @@ XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("MONGO_DB_NAME", "vaidyavaani")
 
+# Allowed origins for CORS (default to localhost and production Vercel frontend)
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:5000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:5000,http://127.0.0.1:5173,https://vaidya-vaani-clinical-ai-intelligence.vercel.app",
+    ).split(",")
+    if origin.strip()
+]
+
 # Initialize AI Clients
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 grok_client = None
 if XAI_API_KEY and XAI_API_KEY != "your_grok_api_key_here":
@@ -66,7 +77,7 @@ _mem_prescriptions: list = []
 _mem_medicine_images: list = []
 
 # ──────────────────────────────────────────
-# FastAPI App
+# FastAPI App & Security Configuration
 # ──────────────────────────────────────────
 app = FastAPI(
     title="VaidyaVaani API",
@@ -76,40 +87,40 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 
 # ──────────────────────────────────────────
 # Pydantic Schemas
 # ──────────────────────────────────────────
 class ParsePrescriptionRequest(BaseModel):
-    image: str          # base64 data URI
-    language: str       # "hindi" | "telugu"
+    image: str = Field(..., min_length=10, max_length=15_000_000, description="Base64 encoded image string")
+    language: str = Field("hindi", description="Target language: hindi or telugu")
 
 class ParsedMedicine(BaseModel):
-    medicine_name: str
-    strength: str
-    dosage_frequency: str
-    duration: str
-    instructions: str
+    medicine_name: str = "Prescribed Medicine"
+    strength: str = "As directed"
+    dosage_frequency: str = "As directed"
+    duration: str = "As prescribed"
+    instructions: str = "Follow doctor instructions"
 
 class ParsePrescriptionResponse(BaseModel):
-    parsed_medicines: List[ParsedMedicine]
-    simplified_explanation: str
-    vernacular_translation: str
-    safety_notes: str
-    tts_ready_text: str
+    parsed_medicines: List[ParsedMedicine] = []
+    simplified_explanation: str = ""
+    vernacular_translation: str = ""
+    safety_notes: str = ""
+    tts_ready_text: str = ""
 
 class TtsRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=5000)
 
 class MedicineImageRequest(BaseModel):
-    name: str
-    servings: str
-    imageUrl: str
+    name: str = Field(..., max_length=200)
+    servings: str = Field(..., max_length=100)
+    imageUrl: str = Field(..., max_length=15_000_000)
     prescriptionId: Optional[str] = None
 
 # ──────────────────────────────────────────
@@ -172,7 +183,6 @@ def detect_lang_code(text: str, language: str) -> str:
     lang = LANG_MAP.get(language.lower())
     if lang:
         return lang
-    # Auto-detect from Unicode ranges
     if re.search(r"[\u0c00-\u0c7f]", text):
         return "te"  # Telugu
     if re.search(r"[\u0900-\u097F]", text):
@@ -205,7 +215,6 @@ async def parse_prescription(req: ParsePrescriptionRequest):
     Accepts base64 image + target language, returns structured JSON.
     """
     try:
-        # Strip data URI prefix if present
         if "," in req.image:
             mime_type = req.image.split(";")[0].split(":")[1]
             b64_data = req.image.split(",")[1]
@@ -215,35 +224,53 @@ async def parse_prescription(req: ParsePrescriptionRequest):
 
         prompt = f"Target language: {req.language}. Parse the attached prescription.\n\n{MASTER_PROMPT}"
 
-        print("Using Gemini for parsing...")
         if not GEMINI_API_KEY:
-            raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
+            raise HTTPException(status_code=503, detail="AI parsing service is not configured with an API key")
         
-        model = genai.GenerativeModel("gemini-flash-latest")
-        response = model.generate_content(
-            [
-                prompt,
-                {
-                    "mime_type": mime_type,
-                    "data": base64.b64decode(b64_data),
-                },
-            ]
-        )
+        # Fallback model list
+        model_names = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"]
+        response = None
+        last_err = None
+
+        for m_name in model_names:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = model.generate_content(
+                    [
+                        prompt,
+                        {
+                            "mime_type": mime_type,
+                            "data": base64.b64decode(b64_data),
+                        },
+                    ]
+                )
+                break
+            except Exception as e:
+                last_err = e
+                continue
+
+        if not response:
+            raise HTTPException(status_code=503, detail="AI Vision model failed to process prescription image.")
+
         raw_text = response.text
-        # Strip markdown code fences if present
         cleaned = re.sub(r"^```(?:json)?\n?", "", raw_text, flags=re.IGNORECASE)
         cleaned = re.sub(r"\n?```\n?$", "", cleaned).strip()
 
+        first_brace = cleaned.find("{")
+        last_brace = cleaned.rfind("}")
+        if first_brace != -1 and last_brace != -1:
+            cleaned = cleaned[first_brace:last_brace + 1]
+
         result = json.loads(cleaned)
 
-        # Save to MongoDB (or memory)
+        # Save to MongoDB (or memory) with timestamp
         record = {
             "language": req.language,
             "parsed_medicines": result.get("parsed_medicines", []),
-            "simplified_explanation": result.get("simplified_explanation"),
-            "vernacular_translation": result.get("vernacular_translation"),
-            "safety_notes": result.get("safety_notes"),
-            "tts_ready_text": result.get("tts_ready_text"),
+            "simplified_explanation": result.get("simplified_explanation", ""),
+            "vernacular_translation": result.get("vernacular_translation", ""),
+            "safety_notes": result.get("safety_notes", ""),
+            "tts_ready_text": result.get("tts_ready_text", ""),
             "created_at": datetime.utcnow().isoformat(),
         }
         if prescriptions_col is not None:
@@ -254,9 +281,11 @@ async def parse_prescription(req: ParsePrescriptionRequest):
         return ParsePrescriptionResponse(**result)
 
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse Gemini response as JSON: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to parse structured response from AI model")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to parse prescription")
 
 
 @app.post("/api/tts")
@@ -273,16 +302,16 @@ async def text_to_speech(req: TtsRequest):
         audio_buffer.seek(0)
         return StreamingResponse(audio_buffer, media_type="audio/mpeg")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="TTS generation failed")
 
 
 @app.get("/api/prescriptions")
-async def list_prescriptions():
-    """Return all stored prescriptions."""
+async def list_prescriptions(limit: int = Query(20, ge=1, le=50)):
+    """Return recent stored prescriptions safely capped."""
     if prescriptions_col is not None:
-        docs = list(prescriptions_col.find({}, {"_id": 0}))
+        docs = list(prescriptions_col.find({}, {"_id": 0}).sort("created_at", -1).limit(limit))
     else:
-        docs = _mem_prescriptions
+        docs = list(reversed(_mem_prescriptions))[:limit]
     return docs
 
 
@@ -307,12 +336,12 @@ async def save_medicine_image(req: MedicineImageRequest):
 
 
 @app.get("/api/medicine-images")
-async def list_medicine_images():
-    """Return all medicine image records."""
+async def list_medicine_images(limit: int = Query(20, ge=1, le=50)):
+    """Return medicine image records safely capped."""
     if medicine_images_col is not None:
-        docs = list(medicine_images_col.find({}, {"_id": 0}))
+        docs = list(medicine_images_col.find({}, {"_id": 0}).sort("created_at", -1).limit(limit))
     else:
-        docs = sorted(_mem_medicine_images, key=lambda x: x.get("created_at", ""), reverse=True)
+        docs = sorted(_mem_medicine_images, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
     return docs
 
 
@@ -337,9 +366,13 @@ async def parse_prescription_upload(
 ):
     """
     Alternative endpoint: upload image file directly (multipart/form-data).
-    Converts to base64 and delegates to the parse endpoint.
+    Capped at 10MB to prevent DoS.
     """
-    content = await file.read()
+    MAX_FILE_SIZE = 10 * 1024 * 1024
+    content = await file.read(MAX_FILE_SIZE + 1)
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (maximum 10MB)")
+
     b64 = base64.b64encode(content).decode("utf-8")
     mime = file.content_type or "image/jpeg"
     data_uri = f"data:{mime};base64,{b64}"

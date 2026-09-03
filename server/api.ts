@@ -7,7 +7,7 @@ import * as googleTTS from "google-tts-api";
 // ─── Inline Resilient Zod Schemas ───────────────────────────────────
 
 const ParsePrescriptionInput = z.object({
-  image: z.string(),
+  image: z.string().min(10, "Image data required").max(12 * 1024 * 1024, "Image exceeds maximum allowed size (10MB)"),
   language: z.enum(["hindi", "telugu"]).default("hindi"),
 });
 
@@ -27,7 +27,9 @@ const ParsePrescriptionOutput = z.object({
   tts_ready_text: z.string().nullish().transform(v => v || "कृपया डॉक्टर के निर्देशानुसार दवा लें।"),
 }).passthrough();
 
-const TtsInput = z.object({ text: z.string() });
+const TtsInput = z.object({
+  text: z.string().min(1, "Text required").max(5000, "Text exceeds maximum allowed length"),
+});
 
 // ─── Master Prompt ──────────────────────────────────────────────────
 
@@ -80,11 +82,51 @@ function extractAndParseJson(raw: string): any {
   return JSON.parse(cleaned);
 }
 
-// ─── Express App ────────────────────────────────────────────────────
+// ─── Express App & Security Hardening ───────────────────────────────
 
 const app = express();
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+// Security Headers
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
+// Payload limits (reduced from 50mb to 10mb for DoS prevention)
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// Sliding-Window IP Rate Limiter (25 requests / 15 minutes per IP)
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const MAX_REQUESTS_PER_WINDOW = 25;
+
+function ipRateLimiter(req: Request, res: Response, next: NextFunction) {
+  const forwarded = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || "unknown-ip";
+  const ip = forwarded.split(",")[0].trim();
+  const now = Date.now();
+
+  const record = rateLimitMap.get(ip);
+  if (!record || now > record.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW_MS });
+    return next();
+  }
+
+  if (record.count >= MAX_REQUESTS_PER_WINDOW) {
+    const retryAfter = Math.ceil((record.resetTime - now) / 1000);
+    res.setHeader("Retry-After", retryAfter.toString());
+    res.status(429).json({
+      message: "Too many requests. Please wait a few minutes before trying again.",
+    });
+    return;
+  }
+
+  record.count++;
+  next();
+}
 
 // Health check
 app.get(["/api/health", "/health", "/"], (_req: Request, res: Response) => {
@@ -133,7 +175,6 @@ async function parseWithOpenAI(candidate: KeyCandidate, imageBase64: string, mim
   const isXAI = candidate.provider === "xai" || candidate.key.startsWith("xai-");
   const baseURL = isXAI ? "https://api.x.ai/v1" : (process.env.OPENAI_BASE_URL || undefined);
   
-  // xAI's current active vision models & OpenAI models
   const modelsToTry = isXAI
     ? ["grok-2-vision-latest", "grok-2-vision", "grok-vision-beta", "grok-2-1212", "grok-2-latest", "grok-beta"]
     : ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"];
@@ -171,7 +212,6 @@ async function parseWithOpenAI(candidate: KeyCandidate, imageBase64: string, mim
       lastErr = err;
       const msg = err?.message || String(err);
       console.warn(`[VaidyaVaani] Model ${model} on key ${candidate.name} failed: ${msg}`);
-      // If out of credits or invalid key, stop looping through models on this dead key
       if (msg.includes("credits") || msg.includes("quota") || msg.includes("Incorrect API key") || msg.includes("401")) {
         throw err;
       }
@@ -233,15 +273,15 @@ async function parseWithGemini(candidate: KeyCandidate, imageBase64: string, mim
   throw lastGeminiErr || new Error("All Gemini models failed");
 }
 
-// ─── Parse Prescription Route (Auto Key Rotation Pool) ────────────────
-app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Request, res: Response) => {
+// ─── Parse Prescription Route (Rate Limited & Protected) ──────────────
+app.post(["/api/prescriptions/parse", "/prescriptions/parse"], ipRateLimiter, async (req: Request, res: Response) => {
   try {
     const input = ParsePrescriptionInput.parse(req.body);
     const candidates = getCandidateKeys();
 
     if (candidates.length === 0) {
-      res.status(400).json({
-        message: "No API keys found in environment variables. Please add GEMINI_API_KEY (from https://aistudio.google.com/) or OPENAI_API_KEY to your Vercel Environment Variables.",
+      res.status(503).json({
+        message: "No AI provider keys configured on server. Please add API keys to environment variables.",
       });
       return;
     }
@@ -268,15 +308,14 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
       } catch (err: any) {
         const errMsg = err?.message || String(err);
         console.warn(`[VaidyaVaani] Key [${candidate.name}] failed: ${errMsg}`);
-        errors.push(`[${candidate.name} (${candidate.provider})]: ${errMsg.slice(0, 150)}`);
+        errors.push(`[${candidate.provider}]: ${errMsg.slice(0, 100)}`);
       }
     }
 
-    // All candidate keys failed
+    // All candidate keys failed - log details internally, return sanitized message to user
     console.error("[VaidyaVaani] All API keys in rotation pool failed:", errors);
-    res.status(402).json({
-      message: `All ${candidates.length} configured API keys in your pool failed or returned errors.`,
-      details: errors,
+    res.status(503).json({
+      message: "AI analysis service is temporarily unavailable. All configured providers failed to process the request. Please verify provider credits or quota.",
     });
   } catch (err) {
     console.error("[VaidyaVaani] Parse validation error:", err);
@@ -288,8 +327,8 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
   }
 });
 
-// ─── TTS ────────────────────────────────────────────────────────────
-app.post(["/api/tts", "/tts"], async (req: Request, res: Response) => {
+// ─── TTS (Rate Limited & Protected) ─────────────────────────────────
+app.post(["/api/tts", "/tts"], ipRateLimiter, async (req: Request, res: Response) => {
   try {
     const { text } = TtsInput.parse(req.body);
     let lang = "hi";
@@ -334,7 +373,7 @@ app.delete(["/api/medicine-images/:id", "/medicine-images/:id"], (req: Request, 
 // ─── Global Error Handler ───────────────────────────────────────────
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("[VaidyaVaani] Unhandled:", err);
-  res.status(err.status || 500).json({ message: err.message || "Internal Server Error" });
+  res.status(err.status || 500).json({ message: "Internal Server Error" });
 });
 
 export = app;
