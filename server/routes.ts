@@ -52,9 +52,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Initialize AI Clients
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: "https://api.x.ai/v1" });
-
   app.post(api.prescriptions.parse.path, async (req, res) => {
     try {
       const input = api.prescriptions.parse.input.parse(req.body);
@@ -62,15 +59,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const mimeType = input.image.split(';')[0].split(':')[1] || "image/jpeg";
       const prompt = `Target language: ${input.language}. Parse the attached prescription.`;
 
-      if (!process.env.OPENAI_API_KEY) {
-        throw new Error("OPENAI_API_KEY environment variable is missing for OpenAI parsing");
+      const apiKey = process.env.OPENAI_API_KEY || process.env.XAI_API_KEY || process.env.GROK_API_KEY;
+
+      if (!apiKey) {
+        res.status(400).json({
+          message: "OPENAI_API_KEY is missing. Please add OPENAI_API_KEY in your Vercel Project Settings -> Environment Variables."
+        });
+        return;
       }
-      console.log("Using OpenAI (gpt-4o) for parsing...");
+
+      const isXAI = apiKey.startsWith("xai-") || !!process.env.XAI_API_KEY;
+      const baseURL = process.env.OPENAI_BASE_URL || (isXAI ? "https://api.x.ai/v1" : undefined);
+      const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
+
+      console.log(`Using ${isXAI ? "xAI" : "OpenAI"} (${model}) for parsing...`);
+
+      const openai = new OpenAI({
+        apiKey: apiKey,
+        ...(baseURL ? { baseURL } : {})
+      });
+
+      const imageUrl = input.image.startsWith("data:")
+        ? input.image
+        : `data:${mimeType};base64,${base64Data}`;
+
       const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: model,
         messages: [
           { role: "system", content: MASTER_PROMPT },
-          { role: "user", content: prompt + "\nBase64 image data: " + base64Data }
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageUrl } }
+            ]
+          }
         ],
         response_format: { type: "json_object" }
       });
@@ -105,25 +128,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       } else {
         const errorMsg = err instanceof Error ? err.message : "Failed to parse prescription";
-        if (process.env.OPENAI_API_KEY) {
-          try {
-            const fallbackCompletion = await openai.chat.completions.create({
-              model: "gpt-4o",
-              messages: [
-                { role: "system", content: MASTER_PROMPT },
-                { role: "user", content: prompt }
-              ],
-              response_format: { type: "json_object" }
-            });
-            const fallbackText = fallbackCompletion.choices[0].message.content || "";
-            const fallbackObj = JSON.parse(fallbackText);
-            const fallbackResponse = api.prescriptions.parse.responses[200].parse(fallbackObj);
-            res.status(200).json(fallbackResponse);
-            return;
-          } catch (openaiErr) {
-            console.error("OpenAI fallback failed:", openaiErr);
-          }
-        }
         res.status(500).json({ message: errorMsg });
       }
     }
