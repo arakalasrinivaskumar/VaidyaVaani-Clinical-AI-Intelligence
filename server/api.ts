@@ -80,16 +80,51 @@ app.get(["/api/health", "/health", "/"], (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "VaidyaVaani API", timestamp: new Date().toISOString() });
 });
 
-// Helper for Vision AI API call (tries OpenAI/xAI, falls back to Gemini)
-async function parseWithOpenAI(apiKey: string, imageBase64: string, mimeType: string, language: string) {
-  const isXAI = apiKey.startsWith("xai-");
+// Key Candidate Interface
+interface KeyCandidate {
+  provider: "openai" | "xai" | "gemini";
+  key: string;
+  name: string;
+}
+
+// Scans all environment variables and gathers all available API keys
+function getCandidateKeys(): KeyCandidate[] {
+  const candidates: KeyCandidate[] = [];
+
+  for (const [name, val] of Object.entries(process.env)) {
+    if (!val || typeof val !== "string") continue;
+    const key = val.trim();
+    if (!key || key.length < 10) continue;
+
+    // Check provider based on name pattern or key value prefix
+    if (name.startsWith("GEMINI_") || key.startsWith("AIzaSy")) {
+      candidates.push({ provider: "gemini", key, name });
+    } else if (name.startsWith("XAI_") || key.startsWith("xai-")) {
+      candidates.push({ provider: "xai", key, name });
+    } else if (name.startsWith("OPENAI_") || key.startsWith("sk-")) {
+      candidates.push({ provider: "openai", key, name });
+    }
+  }
+
+  // Deduplicate keys by value
+  const seen = new Set<string>();
+  return candidates.filter((item) => {
+    if (seen.has(item.key)) return false;
+    seen.add(item.key);
+    return true;
+  });
+}
+
+// Helper: Call OpenAI or xAI
+async function parseWithOpenAI(candidate: KeyCandidate, imageBase64: string, mimeType: string, language: string) {
+  const isXAI = candidate.provider === "xai" || candidate.key.startsWith("xai-");
   const baseURL = isXAI ? "https://api.x.ai/v1" : (process.env.OPENAI_BASE_URL || undefined);
   const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
 
-  console.log(`[VaidyaVaani] Calling ${isXAI ? "xAI" : "OpenAI"} model=${model}`);
+  console.log(`[VaidyaVaani] Using key [${candidate.name}] (${candidate.provider}) model=${model}`);
 
   const OpenAIClient = (OpenAI as any).default || OpenAI;
-  const openai = new OpenAIClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
+  const openai = new OpenAIClient({ apiKey: candidate.key, ...(baseURL ? { baseURL } : {}) });
 
   const imageUrl = imageBase64.startsWith("data:")
     ? imageBase64
@@ -115,9 +150,10 @@ async function parseWithOpenAI(apiKey: string, imageBase64: string, mimeType: st
   return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
 }
 
-async function parseWithGemini(geminiKey: string, imageBase64: string, mimeType: string, language: string) {
-  console.log(`[VaidyaVaani] Calling Gemini (gemini-1.5-flash)`);
-  const genAI = new GoogleGenerativeAI(geminiKey);
+// Helper: Call Google Gemini
+async function parseWithGemini(candidate: KeyCandidate, imageBase64: string, mimeType: string, language: string) {
+  console.log(`[VaidyaVaani] Using key [${candidate.name}] (Gemini 1.5 Flash)`);
+  const genAI = new GoogleGenerativeAI(candidate.key);
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
   const cleanBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
@@ -136,76 +172,53 @@ async function parseWithGemini(geminiKey: string, imageBase64: string, mimeType:
   return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
 }
 
-// ─── Parse Prescription Route ─────────────────────────────────────────
+// ─── Parse Prescription Route (Auto Key Rotation Pool) ────────────────
 app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Request, res: Response) => {
   try {
     const input = ParsePrescriptionInput.parse(req.body);
+    const candidates = getCandidateKeys();
 
-    const xaiKey = process.env.XAI_API_KEY_1 || process.env.XAI_API_KEY;
-    const openAIKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY_1;
-    const geminiKey = process.env.GEMINI_API_KEY;
+    if (candidates.length === 0) {
+      res.status(400).json({
+        message: "No API keys configured. Please add OPENAI_API_KEY, GEMINI_API_KEY, or XAI_API_KEY to your Vercel Environment Variables.",
+      });
+      return;
+    }
 
     const mimeType = input.image.startsWith("data:")
       ? (input.image.split(";")[0].split(":")[1] || "image/jpeg")
       : "image/jpeg";
 
-    let lastError: Error | null = null;
+    const errors: string[] = [];
 
-    // Priority 1: Try xAI (Grok-2 Vision) if xAI key is available
-    if (xaiKey) {
+    // Loop through all candidate keys automatically until one succeeds!
+    for (const candidate of candidates) {
       try {
-        const parsed = await parseWithOpenAI(xaiKey, input.image, mimeType, input.language);
+        let parsed;
+        if (candidate.provider === "gemini") {
+          parsed = await parseWithGemini(candidate, input.image, mimeType, input.language);
+        } else {
+          parsed = await parseWithOpenAI(candidate, input.image, mimeType, input.language);
+        }
+
+        console.log(`[VaidyaVaani] Success with key [${candidate.name}]`);
         res.status(200).json(parsed);
         return;
       } catch (err: any) {
-        console.warn("[VaidyaVaani] xAI failed, trying fallback:", err.message);
-        lastError = err;
+        const errMsg = err?.message || String(err);
+        console.warn(`[VaidyaVaani] Key [${candidate.name}] failed: ${errMsg}`);
+        errors.push(`[${candidate.name}]: ${errMsg.slice(0, 120)}`);
       }
     }
 
-    // Priority 2: Try OpenAI if key is available
-    if (openAIKey) {
-      try {
-        const parsed = await parseWithOpenAI(openAIKey, input.image, mimeType, input.language);
-        res.status(200).json(parsed);
-        return;
-      } catch (err: any) {
-        console.warn("[VaidyaVaani] OpenAI failed, trying fallback:", err.message);
-        lastError = err;
-      }
-    }
-
-    // Priority 3: Try Google Gemini if GEMINI_API_KEY is available
-    if (geminiKey) {
-      try {
-        const parsed = await parseWithGemini(geminiKey, input.image, mimeType, input.language);
-        res.status(200).json(parsed);
-        return;
-      } catch (err: any) {
-        console.warn("[VaidyaVaani] Gemini failed:", err.message);
-        lastError = err;
-      }
-    }
-
-    // If no provider succeeded or no keys configured:
-    if (lastError) {
-      const isQuotaError = lastError.message.includes("429") || lastError.message.includes("quota") || lastError.message.includes("credits");
-      if (isQuotaError) {
-        res.status(402).json({
-          message: "API Quota Exceeded: The configured OpenAI/xAI API key has run out of billing credits. Please add billing credits at https://platform.openai.com/settings/organization/billing or configure a valid GEMINI_API_KEY in Vercel."
-        });
-        return;
-      }
-      res.status(500).json({ message: lastError.message });
-      return;
-    }
-
-    res.status(400).json({
-      message: "No API keys configured in Vercel Environment Variables. Please set OPENAI_API_KEY, XAI_API_KEY, or GEMINI_API_KEY.",
-      envChecked: ["OPENAI_API_KEY", "OPENAI_KEY_1", "XAI_API_KEY_1", "XAI_API_KEY", "GEMINI_API_KEY"],
+    // All candidate keys failed (e.g. quota exceeded)
+    console.error("[VaidyaVaani] All API keys in rotation pool failed:", errors);
+    res.status(402).json({
+      message: `All ${candidates.length} configured API keys in your pool failed or ran out of quota. Please add a free Gemini API key (from https://aistudio.google.com/) as GEMINI_API_KEY to Vercel Environment Variables.`,
+      details: errors,
     });
   } catch (err) {
-    console.error("[VaidyaVaani] Parse error:", err);
+    console.error("[VaidyaVaani] Parse validation error:", err);
     if (err instanceof z.ZodError) {
       res.status(400).json({ message: err.errors[0]?.message || "Validation error" });
     } else {
