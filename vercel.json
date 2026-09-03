@@ -4,9 +4,6 @@
   "functions": {
     "api/index.cjs": {
       "maxDuration": 60
-    },
-    "api/index.ts": {
-      "maxDuration": 60
     }
   },
   "rewrites": [

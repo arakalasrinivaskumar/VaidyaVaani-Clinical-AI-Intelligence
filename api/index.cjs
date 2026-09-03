@@ -30140,12 +30140,12 @@ var init_fileFromPath = __esm({
   }
 });
 
-// api/index.ts
-var index_exports = {};
-__export(index_exports, {
-  default: () => index_default
+// server/api.ts
+var api_exports = {};
+__export(api_exports, {
+  default: () => api_default
 });
-module.exports = __toCommonJS(index_exports);
+module.exports = __toCommonJS(api_exports);
 var import_express = __toESM(require_express2(), 1);
 
 // node_modules/openai/internal/qs/formats.mjs
@@ -40785,7 +40785,7 @@ var coerce = {
 };
 var NEVER = INVALID;
 
-// api/index.ts
+// server/api.ts
 var googleTTS = __toESM(require("google-tts-api"), 1);
 var ParsePrescriptionInput = external_exports.object({
   image: external_exports.string(),
@@ -40936,7 +40936,7 @@ app.use((err, _req, res, _next) => {
   console.error("[VaidyaVaani] Unhandled:", err);
   res.status(err.status || 500).json({ message: err.message || "Internal Server Error" });
 });
-var index_default = app;
+var api_default = app;
 /*! Bundled license information:
 
 depd/index.js:
