@@ -48,11 +48,11 @@ PROCESSING RULES
 5. Patient Safety: Add warning if unclear, never advise stopping medicine.
 `;
 
-export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+export function registerRoutes(httpServer: Server, app: Express): Server {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  const parsePaths = [api.prescriptions.parse.path, "/prescriptions/parse", "/api/prescriptions/parse"];
+  const parsePaths = ["/api/prescriptions/parse", "/prescriptions/parse", "/parse", api.prescriptions.parse.path];
   app.post(parsePaths, async (req, res) => {
     try {
       const input = api.prescriptions.parse.input.parse(req.body);
@@ -75,7 +75,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       console.log(`Using ${isXAI ? "xAI" : "OpenAI"} (${model}) for parsing...`);
 
-      const openai = new OpenAI({
+      const OpenAIClient = (OpenAI as any).default || OpenAI;
+      const openai = new OpenAIClient({
         apiKey: apiKey,
         ...(baseURL ? { baseURL } : {})
       });
@@ -134,7 +135,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  const ttsPaths = [api.prescriptions.tts.path, "/tts", "/api/tts"];
+  const ttsPaths = ["/api/tts", "/tts", api.prescriptions.tts.path];
   app.post(ttsPaths, async (req, res) => {
     try {
       const input = api.prescriptions.tts.input.parse(req.body);
@@ -143,8 +144,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (/[ఀ-౿]/.test(input.text)) lang = "te";
       else if (!/[ऀ-ॿ]/.test(input.text) && /^[a-zA-Z\s.,]*$/.test(input.text)) lang = "en";
 
-      const audioChunks = await googleTTS.getAllAudioBase64(input.text, { lang, slow: false, host: 'https://translate.google.com' });
-      const fullBuffer = Buffer.concat(audioChunks.map(chunk => Buffer.from(chunk.base64, 'base64')));
+      const getAudioFn = (googleTTS as any).getAllAudioBase64 || (googleTTS as any).default?.getAllAudioBase64;
+      const audioChunks = await getAudioFn(input.text, { lang, slow: false, host: 'https://translate.google.com' });
+      const fullBuffer = Buffer.concat(audioChunks.map((chunk: any) => Buffer.from(chunk.base64, 'base64')));
       res.setHeader('Content-Type', 'audio/mp3');
       res.status(200).send(fullBuffer);
     } catch (err) {
