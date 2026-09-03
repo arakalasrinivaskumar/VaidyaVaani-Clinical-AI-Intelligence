@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { api } from "@shared/routes";
+import { api } from "../shared/routes";
 import { z } from "zod";
 import express from "express";
 import * as googleTTS from "google-tts-api";
@@ -52,7 +52,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  app.post(api.prescriptions.parse.path, async (req, res) => {
+  const parsePaths = [api.prescriptions.parse.path, "/prescriptions/parse", "/api/prescriptions/parse"];
+  app.post(parsePaths, async (req, res) => {
     try {
       const input = api.prescriptions.parse.input.parse(req.body);
       const base64Data = input.image.split(',')[1] || input.image;
@@ -133,7 +134,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post(api.prescriptions.tts.path, async (req, res) => {
+  const ttsPaths = [api.prescriptions.tts.path, "/tts", "/api/tts"];
+  app.post(ttsPaths, async (req, res) => {
     try {
       const input = api.prescriptions.tts.input.parse(req.body);
       const languageMap: Record<string, string> = { "hindi": "hi", "telugu": "te" };
@@ -151,7 +153,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/medicine-images", async (req, res) => {
+  app.post(["/api/medicine-images", "/medicine-images"], async (req, res) => {
     try {
       const saved = await storage.saveMedicineImage(req.body);
       res.status(201).json(saved);
@@ -161,7 +163,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/medicine-images", async (req, res) => {
+  app.get(["/api/medicine-images", "/medicine-images"], async (req, res) => {
     try {
       const images = await storage.getMedicineImages();
       res.json(images);
@@ -171,7 +173,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.delete("/api/medicine-images/:id", async (req, res) => {
+  app.delete(["/api/medicine-images/:id", "/medicine-images/:id"], async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {

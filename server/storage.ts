@@ -1,4 +1,4 @@
-import { type InsertPrescription, type Prescription, type InsertMedicineImage, type MedicineImage } from "@shared/schema";
+import { type InsertPrescription, type Prescription, type InsertMedicineImage, type MedicineImage } from "../shared/schema";
 
 export interface IStorage {
   getPrescriptions(): Promise<Prescription[]>;
