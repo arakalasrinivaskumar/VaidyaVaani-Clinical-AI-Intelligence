@@ -1,8 +1,9 @@
 import express, { type Request, Response, NextFunction } from "express";
 import OpenAI from "openai";
 import { z } from "zod";
+import * as googleTTS from "google-tts-api";
 
-// ─── Inline Zod Schemas (avoids cross-directory ESM import issues) ─────────────
+// ─── Inline Zod Schemas ─────────────────────────────────────────────
 
 const ParsePrescriptionInput = z.object({
   image: z.string(),
@@ -27,30 +28,7 @@ const ParsePrescriptionOutput = z.object({
 
 const TtsInput = z.object({ text: z.string() });
 
-// ─── In-Memory Storage (avoids drizzle-orm/pg imports) ────────────────────────
-
-interface Prescription {
-  id: number;
-  language: string;
-  parsedMedicines: any[] | null;
-  simplifiedExplanation: string | null;
-  vernacularTranslation: string | null;
-  safetyNotes: string | null;
-  ttsReadyText: string | null;
-  imageUrl: string | null;
-  ocrText: string | null;
-  createdAt: Date;
-}
-
-const prescriptions = new Map<number, Prescription>();
-let prescriptionCounter = 1;
-
-function savePrescription(data: Omit<Prescription, "id" | "createdAt">) {
-  const id = prescriptionCounter++;
-  prescriptions.set(id, { ...data, id, createdAt: new Date() });
-}
-
-// ─── Master Prompt ────────────────────────────────────────────────────────────
+// ─── Master Prompt ──────────────────────────────────────────────────
 
 const MASTER_PROMPT = `You are a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
 Your task is to:
@@ -90,23 +68,22 @@ PROCESSING RULES
 4. Translation rules: You MUST translate the explanation, instructions, duration, dosage, safety notes, and TTS text completely into the TARGET LANGUAGE provided by the user.
 5. Patient Safety: Add warning if unclear, never advise stopping medicine.`;
 
-// ─── Express App ──────────────────────────────────────────────────────────────
+// ─── Express App ────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Health check
-app.get(["/api/health", "/health"], (_req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get(["/api/health", "/health", "/"], (_req: Request, res: Response) => {
+  res.json({ status: "ok", service: "VaidyaVaani API", timestamp: new Date().toISOString() });
 });
 
-// ─── Parse Prescription ───────────────────────────────────────────────────────
+// ─── Parse Prescription ─────────────────────────────────────────────
 app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Request, res: Response) => {
   try {
     const input = ParsePrescriptionInput.parse(req.body);
 
-    // Resolve API key from all possible env var names
     const apiKey =
       process.env.OPENAI_API_KEY ||
       process.env.OPENAI_KEY_1 ||
@@ -127,7 +104,8 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
 
     console.log(`[VaidyaVaani] model=${model} lang=${input.language}`);
 
-    const openai = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+    const OpenAIClient = (OpenAI as any).default || OpenAI;
+    const openai = new OpenAIClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
 
     const mimeType = input.image.startsWith("data:")
       ? (input.image.split(";")[0].split(":")[1] || "image/jpeg")
@@ -155,19 +133,6 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
     const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
     const parsed = ParsePrescriptionOutput.parse(JSON.parse(cleaned));
 
-    try {
-      savePrescription({
-        language: input.language,
-        parsedMedicines: parsed.parsed_medicines,
-        simplifiedExplanation: parsed.simplified_explanation,
-        vernacularTranslation: parsed.vernacular_translation,
-        safetyNotes: parsed.safety_notes,
-        ttsReadyText: parsed.tts_ready_text,
-        imageUrl: null,
-        ocrText: null,
-      });
-    } catch (_) { /* non-fatal */ }
-
     res.status(200).json(parsed);
   } catch (err) {
     console.error("[VaidyaVaani] Parse error:", err);
@@ -179,7 +144,7 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req: Reque
   }
 });
 
-// ─── TTS ──────────────────────────────────────────────────────────────────────
+// ─── TTS ────────────────────────────────────────────────────────────
 app.post(["/api/tts", "/tts"], async (req: Request, res: Response) => {
   try {
     const { text } = TtsInput.parse(req.body);
@@ -187,9 +152,7 @@ app.post(["/api/tts", "/tts"], async (req: Request, res: Response) => {
     if (/[ఀ-౿]/.test(text)) lang = "te";
     else if (!/[ऀ-ॿ]/.test(text) && /^[a-zA-Z\s.,!?]*$/.test(text)) lang = "en";
 
-    // Dynamic require to avoid ESM issues with google-tts-api
-    const gTTS = require("google-tts-api");
-    const getAllAudio = gTTS.getAllAudioBase64 || gTTS.default?.getAllAudioBase64;
+    const getAllAudio = (googleTTS as any).getAllAudioBase64 || (googleTTS as any).default?.getAllAudioBase64;
     if (!getAllAudio) throw new Error("google-tts-api not loaded correctly");
 
     const chunks = await getAllAudio(text, { lang, slow: false, host: "https://translate.google.com" });
@@ -202,7 +165,7 @@ app.post(["/api/tts", "/tts"], async (req: Request, res: Response) => {
   }
 });
 
-// ─── Medicine Images (in-memory stub) ────────────────────────────────────────
+// ─── Medicine Images ────────────────────────────────────────────────
 const medicineImages: any[] = [];
 let imgCounter = 1;
 
@@ -224,10 +187,10 @@ app.delete(["/api/medicine-images/:id", "/medicine-images/:id"], (req: Request, 
   res.json({ success: true });
 });
 
-// ─── Global Error Handler ─────────────────────────────────────────────────────
+// ─── Global Error Handler ───────────────────────────────────────────
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("[VaidyaVaani] Unhandled:", err);
   res.status(err.status || 500).json({ message: err.message || "Internal Server Error" });
 });
 
-module.exports = app;
+export default app;
