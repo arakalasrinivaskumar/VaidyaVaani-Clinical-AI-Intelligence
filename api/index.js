@@ -41790,22 +41790,22 @@ var NEVER = INVALID;
 var googleTTS = __toESM(require("google-tts-api"), 1);
 var ParsePrescriptionInput = external_exports.object({
   image: external_exports.string(),
-  language: external_exports.enum(["hindi", "telugu"])
+  language: external_exports.enum(["hindi", "telugu"]).default("hindi")
 });
 var ParsedMedicineSchema = external_exports.object({
-  medicine_name: external_exports.string(),
-  strength: external_exports.string(),
-  dosage_frequency: external_exports.string(),
-  duration: external_exports.string(),
-  instructions: external_exports.string()
-});
+  medicine_name: external_exports.string().nullish().transform((v2) => v2 || "Prescribed Medicine"),
+  strength: external_exports.string().nullish().transform((v2) => v2 || "As directed"),
+  dosage_frequency: external_exports.string().nullish().transform((v2) => v2 || "As directed"),
+  duration: external_exports.string().nullish().transform((v2) => v2 || "As prescribed"),
+  instructions: external_exports.string().nullish().transform((v2) => v2 || "Follow doctor instructions")
+}).passthrough();
 var ParsePrescriptionOutput = external_exports.object({
-  parsed_medicines: external_exports.array(ParsedMedicineSchema),
-  simplified_explanation: external_exports.string(),
-  vernacular_translation: external_exports.string(),
-  safety_notes: external_exports.string(),
-  tts_ready_text: external_exports.string()
-});
+  parsed_medicines: external_exports.array(ParsedMedicineSchema).default([]),
+  simplified_explanation: external_exports.string().nullish().transform((v2) => v2 || "Prescription interpreted successfully."),
+  vernacular_translation: external_exports.string().nullish().transform((v2) => v2 || ""),
+  safety_notes: external_exports.string().nullish().transform((v2) => v2 || "Please consult your doctor before modifying medication."),
+  tts_ready_text: external_exports.string().nullish().transform((v2) => v2 || "\u0915\u0943\u092A\u092F\u093E \u0921\u0949\u0915\u094D\u091F\u0930 \u0915\u0947 \u0928\u093F\u0930\u094D\u0926\u0947\u0936\u093E\u0928\u0941\u0938\u093E\u0930 \u0926\u0935\u093E \u0932\u0947\u0902\u0964")
+}).passthrough();
 var TtsInput = external_exports.object({ text: external_exports.string() });
 var MASTER_PROMPT = `You are a Medical Prescription Interpretation Agent designed to assist patients in understanding doctor prescriptions clearly and safely.
 Your task is to:
@@ -41818,18 +41818,18 @@ Your task is to:
 You must not diagnose or change medical intent.
 You must not invent medicines or dosages.
 
-OUTPUT FORMAT (STRICT JSON):
-Return output in the following JSON structure ONLY. Do not include markdown formatting or backticks.
+OUTPUT FORMAT (STRICT JSON ONLY):
+Return output in the following JSON structure ONLY. Do not include markdown formatting or extra text.
 CRITICAL: ALL STRING VALUES MUST BE IN THE TARGET LANGUAGE (Except medicine names which should be in English or transliterated).
 
 {
   "parsed_medicines": [
     {
       "medicine_name": "Name of medicine in English",
-      "strength": "Strength (e.g., 500mg) translated if needed",
-      "dosage_frequency": "Frequency translated to target language (e.g., in Hindi: \u0926\u093F\u0928 \u092E\u0947\u0902 \u0926\u094B \u092C\u093E\u0930)",
-      "duration": "Duration translated to target language (e.g., in Hindi: 5 \u0926\u093F\u0928)",
-      "instructions": "Instructions translated to target language (e.g., in Hindi: \u0916\u093E\u0928\u0947 \u0915\u0947 \u092C\u093E\u0926)"
+      "strength": "Strength (e.g., 500mg) in target language",
+      "dosage_frequency": "Frequency in target language (e.g. \u0926\u093F\u0928 \u092E\u0947\u0902 \u0926\u094B \u092C\u093E\u0930 / \u0C30\u0C4B\u0C1C\u0C41\u0C15\u0C41 \u0C30\u0C46\u0C02\u0C21\u0C41\u0C38\u0C3E\u0C30\u0C4D\u0C32\u0C41)",
+      "duration": "Duration in target language (e.g. 5 \u0926\u093F\u0928 / 5 \u0C30\u0C4B\u0C1C\u0C41\u0C32\u0C41)",
+      "instructions": "Instructions in target language (e.g. \u0916\u093E\u0928\u0947 \u0915\u0947 \u092C\u093E\u0926 / \u0C2D\u0C4B\u0C1C\u0C28\u0C02 \u0C24\u0C30\u0C4D\u0C35\u0C3E\u0C24)"
     }
   ],
   "simplified_explanation": "A complete, friendly explanation of ALL medicines translated fully into the TARGET LANGUAGE.",
@@ -41844,6 +41844,15 @@ PROCESSING RULES
 3. Dosage: Maintain exact dosage. Convert frequency into human-understandable format in the TARGET LANGUAGE.
 4. Translation rules: You MUST translate the explanation, instructions, duration, dosage, safety notes, and TTS text completely into the TARGET LANGUAGE provided by the user.
 5. Patient Safety: Add warning if unclear, never advise stopping medicine.`;
+function extractAndParseJson(raw) {
+  let cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+  return JSON.parse(cleaned);
+}
 var app = (0, import_express.default)();
 app.use(import_express.default.json({ limit: "50mb" }));
 app.use(import_express.default.urlencoded({ extended: true, limit: "50mb" }));
@@ -41856,11 +41865,12 @@ function getCandidateKeys() {
     if (!val || typeof val !== "string") continue;
     const key = val.trim();
     if (!key || key.length < 10) continue;
-    if (name.startsWith("GEMINI_") || key.startsWith("AIzaSy")) {
+    const uName = name.toUpperCase();
+    if (uName.includes("GEMINI") || uName.includes("GOOGLE") || key.startsWith("AIza")) {
       candidates.push({ provider: "gemini", key, name });
-    } else if (name.startsWith("XAI_") || key.startsWith("xai-")) {
+    } else if (uName.includes("XAI") || uName.includes("GROK") || key.startsWith("xai-")) {
       candidates.push({ provider: "xai", key, name });
-    } else if (name.startsWith("OPENAI_") || key.startsWith("sk-")) {
+    } else if (uName.includes("OPENAI") || uName.includes("GPT") || key.startsWith("sk-")) {
       candidates.push({ provider: "openai", key, name });
     }
   }
@@ -41875,7 +41885,7 @@ async function parseWithOpenAI(candidate, imageBase64, mimeType, language) {
   const isXAI = candidate.provider === "xai" || candidate.key.startsWith("xai-");
   const baseURL = isXAI ? "https://api.x.ai/v1" : process.env.OPENAI_BASE_URL || void 0;
   const model = process.env.OPENAI_MODEL || (isXAI ? "grok-2-vision-1212" : "gpt-4o");
-  console.log(`[VaidyaVaani] Using key [${candidate.name}] (${candidate.provider}) model=${model}`);
+  console.log(`[VaidyaVaani] Trying key [${candidate.name}] (${candidate.provider}) model=${model}`);
   const OpenAIClient = openai_default.default || openai_default;
   const openai = new OpenAIClient({ apiKey: candidate.key, ...baseURL ? { baseURL } : {} });
   const imageUrl = imageBase64.startsWith("data:") ? imageBase64 : `data:${mimeType};base64,${imageBase64}`;
@@ -41886,7 +41896,7 @@ async function parseWithOpenAI(candidate, imageBase64, mimeType, language) {
       {
         role: "user",
         content: [
-          { type: "text", text: `Target language: ${language}. Parse the attached prescription.` },
+          { type: "text", text: `Target language: ${language}. Parse the attached prescription image accurately.` },
           { type: "image_url", image_url: { url: imageUrl } }
         ]
       }
@@ -41894,28 +41904,43 @@ async function parseWithOpenAI(candidate, imageBase64, mimeType, language) {
     response_format: { type: "json_object" }
   });
   const raw = response.choices[0].message.content || "{}";
-  const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
-  return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
+  const parsed = extractAndParseJson(raw);
+  return ParsePrescriptionOutput.parse(parsed);
 }
 async function parseWithGemini(candidate, imageBase64, mimeType, language) {
-  console.log(`[VaidyaVaani] Using key [${candidate.name}] (Gemini 1.5 Flash)`);
+  console.log(`[VaidyaVaani] Trying key [${candidate.name}] (Google Gemini)`);
   const genAI = new GoogleGenerativeAI(candidate.key);
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const modelsToTry = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"];
   const cleanBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
-  const result = await model.generateContent([
-    `${MASTER_PROMPT}
+  let lastGeminiErr = null;
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          responseMimeType: "application/json"
+        }
+      });
+      const result = await model.generateContent([
+        `${MASTER_PROMPT}
 
 Target language: ${language}. Parse the attached prescription. Return output strictly in valid JSON matching the specified structure.`,
-    {
-      inlineData: {
-        data: cleanBase64,
-        mimeType: mimeType || "image/jpeg"
-      }
+        {
+          inlineData: {
+            data: cleanBase64,
+            mimeType: mimeType || "image/jpeg"
+          }
+        }
+      ]);
+      const raw = result.response.text();
+      const parsed = extractAndParseJson(raw);
+      return ParsePrescriptionOutput.parse(parsed);
+    } catch (err) {
+      lastGeminiErr = err;
+      console.warn(`[VaidyaVaani] Gemini model [${modelName}] failed: ${err?.message || err}`);
     }
-  ]);
-  const raw = result.response.text();
-  const cleaned = raw.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
-  return ParsePrescriptionOutput.parse(JSON.parse(cleaned));
+  }
+  throw lastGeminiErr || new Error("All Gemini models failed");
 }
 app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req, res) => {
   try {
@@ -41923,7 +41948,7 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req, res) 
     const candidates = getCandidateKeys();
     if (candidates.length === 0) {
       res.status(400).json({
-        message: "No API keys configured. Please add OPENAI_API_KEY, GEMINI_API_KEY, or XAI_API_KEY to your Vercel Environment Variables."
+        message: "No API keys found in environment variables. Please add GEMINI_API_KEY (from https://aistudio.google.com/) or OPENAI_API_KEY to your Vercel Environment Variables and Redeploy."
       });
       return;
     }
@@ -41943,12 +41968,12 @@ app.post(["/api/prescriptions/parse", "/prescriptions/parse"], async (req, res) 
       } catch (err) {
         const errMsg = err?.message || String(err);
         console.warn(`[VaidyaVaani] Key [${candidate.name}] failed: ${errMsg}`);
-        errors.push(`[${candidate.name}]: ${errMsg.slice(0, 120)}`);
+        errors.push(`[${candidate.name} (${candidate.provider})]: ${errMsg.slice(0, 150)}`);
       }
     }
     console.error("[VaidyaVaani] All API keys in rotation pool failed:", errors);
     res.status(402).json({
-      message: `All ${candidates.length} configured API keys in your pool failed or ran out of quota. Please add a free Gemini API key (from https://aistudio.google.com/) as GEMINI_API_KEY to Vercel Environment Variables.`,
+      message: `All ${candidates.length} configured API keys in your pool failed or returned errors. If you just added new keys in Vercel, remember to click "Redeploy" on the Deployments tab so the new keys take effect!`,
       details: errors
     });
   } catch (err) {

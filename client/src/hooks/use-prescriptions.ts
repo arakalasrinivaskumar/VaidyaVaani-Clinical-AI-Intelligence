@@ -15,7 +15,11 @@ export function useParsePrescription() {
         const text = await res.text();
         try {
           const error = JSON.parse(text);
-          errorMessage = error.message || errorMessage;
+          if (error.details && Array.isArray(error.details) && error.details.length > 0) {
+            errorMessage = `${error.message}\n\nKey Diagnostics:\n• ` + error.details.join("\n• ");
+          } else {
+            errorMessage = error.message || errorMessage;
+          }
         } catch {
           if (res.status === 413) {
             errorMessage = "Image payload too large. Please upload a smaller image file.";
